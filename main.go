@@ -24,6 +24,7 @@ import (
 
 	"golang.org/x/net/http2"
 
+	"encoding/json"
 	"github.com/fatih/color"
 )
 
@@ -67,6 +68,12 @@ var (
 	redirectsFollowed int
 
 	version = "devel" // for -v flag, updated during the release process with -ldflags=-X=main.version=...
+
+	// output trace data to file
+	traceFileName string
+
+	traceFile *os.File
+	repeat    int
 )
 
 const maxRedirects = 10
@@ -84,6 +91,8 @@ func init() {
 	flag.StringVar(&clientCertFile, "E", "", "client cert file for tls config")
 	flag.BoolVar(&fourOnly, "4", false, "resolve IPv4 addresses only")
 	flag.BoolVar(&sixOnly, "6", false, "resolve IPv6 addresses only")
+	flag.StringVar(&traceFileName, "T", "", "output timing data to file")
+	flag.IntVar(&repeat, "r", 1, "repeat same call N times")
 
 	flag.Usage = usage
 }
@@ -136,8 +145,17 @@ func main() {
 	}
 
 	url := parseURL(args[0])
+	if traceFileName != "" {
+		var err error
+		traceFile, err = os.OpenFile(traceFileName, os.O_WRONLY|os.O_APPEND|os.O_CREATE, 0777)
+		if err != nil {
+			log.Fatalf("can't open file %v: %v", traceFileName, err)
+		}
+	}
 
-	visit(url)
+	for i := 0; i < repeat; i++ {
+		visit(url)
+	}
 }
 
 // readClientCert - helper function to read client certificate
@@ -364,6 +382,26 @@ func visit(url *url.URL) {
 			fmtb(t7.Sub(t0)), // total
 		)
 	}
+	if traceFile != nil {
+		e := traceEntry{
+			Uri: req.URL.String(),
+			Tr: []time.Duration{
+				t1.Sub(t0), // namelookup
+				t2.Sub(t0), // connect
+				t3.Sub(t0), // pretransfer
+				t4.Sub(t0), // starttransfer
+				t7.Sub(t0), // total
+			},
+			T: []time.Time{
+				t1, // namelookup
+				t2, // connect
+				t3, // pretransfer
+				t4, // starttransfer
+				t7, // total
+			},
+		}
+		json.NewEncoder(traceFile).Encode(e)
+	}
 
 	if followRedirects && isRedirect(resp) {
 		loc, err := resp.Location()
@@ -382,6 +420,12 @@ func visit(url *url.URL) {
 
 		visit(loc)
 	}
+}
+
+type traceEntry struct {
+	Uri string
+	Tr  []time.Duration
+	T   []time.Time
 }
 
 func isRedirect(resp *http.Response) bool {
